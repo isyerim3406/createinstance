@@ -22,22 +22,28 @@ def debug_config():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# Signer fonksiyonu
+# Signer fonksiyonu - DÜZELTİLDİ
 def get_signer():
-    private_key_content = os.environ["OCI_PRIVATE_KEY"].replace("\\n", "\n")
-    return oci.signer.Signer(
-        tenancy=os.environ["OCI_TENANCY_OCID"],
-        user=os.environ["OCI_USER_OCID"],
-        fingerprint=os.environ["OCI_FINGERPRINT"],
-        private_key_content=private_key_content,
-        pass_phrase=None
-    )
+    # Private key'i düzgün formata çevir
+    private_key = os.environ["OCI_PRIVATE_KEY"].replace("\\n", "\n")
+    
+    # Geçici dosya oluşturmadan config dict kullan
+    config = {
+        "tenancy": os.environ["OCI_TENANCY_OCID"],
+        "user": os.environ["OCI_USER_OCID"],
+        "fingerprint": os.environ["OCI_FINGERPRINT"],
+        "key_content": private_key,
+        "region": os.environ.get("OCI_REGION", "me-abudhabi-1")
+    }
+    
+    # oci.config.validate_config(config)  # İsteğe bağlı validasyon
+    return config
 
 # Instance başlatma fonksiyonu
 def launch_instance():
     try:
-        signer = get_signer()
-        compute_client = oci.core.ComputeClient(config={}, signer=signer)
+        config = get_signer()
+        compute_client = oci.core.ComputeClient(config)
         
         shape_config = oci.core.models.LaunchInstanceShapeConfigDetails(
             ocpus=1.0,
@@ -109,8 +115,8 @@ def home():
 @app.route("/check/<instance_id>")
 def check_instance(instance_id):
     try:
-        signer = get_signer()
-        compute_client = oci.core.ComputeClient(config={}, signer=signer)
+        config = get_signer()
+        compute_client = oci.core.ComputeClient(config)
         response = compute_client.get_instance(instance_id)
         return jsonify({
             "status": "success",
@@ -127,8 +133,8 @@ def check_instance(instance_id):
 @app.route("/list")
 def list_instances():
     try:
-        signer = get_signer()
-        compute_client = oci.core.ComputeClient(config={}, signer=signer)
+        config = get_signer()
+        compute_client = oci.core.ComputeClient(config)
         instances = compute_client.list_instances(compartment_id=os.environ["OCI_COMPARTMENT_OCID"])
         instance_list = [{
             "id": inst.id,
