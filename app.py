@@ -23,7 +23,7 @@ def debug_config():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# Signer fonksiyonu - Düzeltilmiş versiyon
+# Signer fonksiyonu - Düzeltilmiş
 def get_signer():
     """OCI Signer'ı oluşturur"""
     private_key_content = os.environ["OCI_PRIVATE_KEY"]
@@ -43,16 +43,21 @@ def get_signer():
         user=os.environ["OCI_USER_OCID"],
         fingerprint=os.environ["OCI_FINGERPRINT"],
         private_key_content=private_key_content,
-        pass_phrase=None,
-        region=os.environ.get("OCI_REGION", "me-abudhabi-1")
+        pass_phrase=None
     )
 
     return signer
 
+# ComputeClient oluştur
+def get_compute_client():
+    signer = get_signer()
+    config = {"region": os.environ.get("OCI_REGION", "me-abudhabi-1")}
+    return oci.core.ComputeClient(config=config, signer=signer)
+
 # Instance başlatma fonksiyonu
 def launch_instance():
     try:
-        compute_client = oci.core.ComputeClient(config={}, signer=get_signer())
+        compute_client = get_compute_client()
 
         shape_config = oci.core.models.LaunchInstanceShapeConfigDetails(
             ocpus=1.0,
@@ -109,7 +114,7 @@ def launch_instance():
             "message": str(e)
         }
 
-# Sağlık kontrolü endpoint'i
+# Health check
 @app.route("/health")
 def health():
     return jsonify({"status": "healthy"}), 200
@@ -123,12 +128,13 @@ def home():
     else:
         return jsonify(result), 500
 
-# Diğer CRUD ve listeleme endpointleri
+# Instance durum kontrol
 @app.route("/check/<instance_id>")
 def check_instance(instance_id):
     try:
-        compute_client = oci.core.ComputeClient(config={}, signer=get_signer())
+        compute_client = get_compute_client()
         response = compute_client.get_instance(instance_id)
+
         return jsonify({
             "status": "success",
             "instance_id": response.data.id,
@@ -140,45 +146,48 @@ def check_instance(instance_id):
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
+# Tüm instance'ları listele
 @app.route("/list")
 def list_instances():
     try:
-        compute_client = oci.core.ComputeClient(config={}, signer=get_signer())
-        instances = compute_client.list_instances(
-            compartment_id=os.environ["OCI_COMPARTMENT_OCID"]
-        )
+        compute_client = get_compute_client()
+        instances = compute_client.list_instances(compartment_id=os.environ["OCI_COMPARTMENT_OCID"])
         instance_list = [{
             "id": inst.id,
             "display_name": inst.display_name,
             "lifecycle_state": inst.lifecycle_state,
             "shape": inst.shape
         } for inst in instances.data]
+
         return jsonify({"status": "success", "count": len(instance_list), "instances": instance_list}), 200
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
+# Instance durdur
 @app.route("/stop/<instance_id>")
 def stop_instance(instance_id):
     try:
-        compute_client = oci.core.ComputeClient(config={}, signer=get_signer())
+        compute_client = get_compute_client()
         compute_client.instance_action(instance_id, "STOP")
         return jsonify({"status": "success", "message": f"Instance {instance_id} stopping..."}), 200
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
+# Instance başlat
 @app.route("/start/<instance_id>")
 def start_instance(instance_id):
     try:
-        compute_client = oci.core.ComputeClient(config={}, signer=get_signer())
+        compute_client = get_compute_client()
         compute_client.instance_action(instance_id, "START")
         return jsonify({"status": "success", "message": f"Instance {instance_id} starting..."}), 200
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
+# Instance sil
 @app.route("/terminate/<instance_id>")
 def terminate_instance(instance_id):
     try:
-        compute_client = oci.core.ComputeClient(config={}, signer=get_signer())
+        compute_client = get_compute_client()
         compute_client.terminate_instance(instance_id)
         return jsonify({"status": "success", "message": f"Instance {instance_id} terminating..."}), 200
     except Exception as e:
