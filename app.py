@@ -8,30 +8,35 @@ app = Flask(__name__)
 def get_signer():
     """
     OCI Signer oluşturur.
-    private_key parametresi DOĞRUDAN PEM string bekler,
-    cryptography key objesi DEĞİL!
+    Auth kullanarak daha esnek yapı.
     """
-    # Private key'i environment variable'dan direkt al
+    # Private key'i environment variable'dan al
     private_key_content = os.environ["OCI_PRIVATE_KEY"]
     
     # Eğer \n karakterleri escaped ise düzelt
     if "\\n" in private_key_content:
         private_key_content = private_key_content.replace("\\n", "\n")
     
-    # Signer oluştur - private_key_content parametresi kullan
-    return oci.signer.Signer(
-        tenancy=os.environ["OCI_TENANCY_OCID"],
-        user=os.environ["OCI_USER_OCID"],
-        fingerprint=os.environ["OCI_FINGERPRINT"],
-        private_key_content=private_key_content  # Bu parametre adı doğru!
-    )
+    # Config dict oluştur
+    config = {
+        "tenancy": os.environ["OCI_TENANCY_OCID"],
+        "user": os.environ["OCI_USER_OCID"],
+        "fingerprint": os.environ["OCI_FINGERPRINT"],
+        "key_content": private_key_content,
+        "region": os.environ.get("OCI_REGION", "me-abudhabi-1")
+    }
+    
+    # oci.config.validate_config(config)  # Opsiyonel: Config doğrulama
+    
+    # Signer yerine doğrudan config kullan
+    return config
 
 # Instance başlatma fonksiyonu
 def launch_instance():
     try:
-        # Signer ile compute client oluştur
-        signer = get_signer()
-        compute_client = oci.core.ComputeClient(config={}, signer=signer)
+        # Config ile compute client oluştur (signer yerine)
+        config = get_signer()
+        compute_client = oci.core.ComputeClient(config)
         
         # Shape configuration (ARM için)
         shape_config = oci.core.models.LaunchInstanceShapeConfigDetails(
@@ -113,8 +118,8 @@ def home():
 def check_instance(instance_id):
     """Belirli bir instance'ın durumunu kontrol et"""
     try:
-        signer = get_signer()
-        compute_client = oci.core.ComputeClient(config={}, signer=signer)
+        config = get_signer()
+        compute_client = oci.core.ComputeClient(config)
         
         response = compute_client.get_instance(instance_id)
         
@@ -138,8 +143,8 @@ def check_instance(instance_id):
 def list_instances():
     """Compartment'taki tüm instance'ları listele"""
     try:
-        signer = get_signer()
-        compute_client = oci.core.ComputeClient(config={}, signer=signer)
+        config = get_signer()
+        compute_client = oci.core.ComputeClient(config)
         
         instances = compute_client.list_instances(
             compartment_id=os.environ["OCI_COMPARTMENT_OCID"]
@@ -169,8 +174,8 @@ def list_instances():
 def stop_instance(instance_id):
     """Instance'ı durdur"""
     try:
-        signer = get_signer()
-        compute_client = oci.core.ComputeClient(config={}, signer=signer)
+        config = get_signer()
+        compute_client = oci.core.ComputeClient(config)
         
         compute_client.instance_action(instance_id, "STOP")
         
@@ -190,8 +195,8 @@ def stop_instance(instance_id):
 def start_instance(instance_id):
     """Instance'ı başlat"""
     try:
-        signer = get_signer()
-        compute_client = oci.core.ComputeClient(config={}, signer=signer)
+        config = get_signer()
+        compute_client = oci.core.ComputeClient(config)
         
         compute_client.instance_action(instance_id, "START")
         
@@ -211,8 +216,8 @@ def start_instance(instance_id):
 def terminate_instance(instance_id):
     """Instance'ı kalıcı olarak sil"""
     try:
-        signer = get_signer()
-        compute_client = oci.core.ComputeClient(config={}, signer=signer)
+        config = get_signer()
+        compute_client = oci.core.ComputeClient(config)
         
         compute_client.terminate_instance(instance_id)
         
