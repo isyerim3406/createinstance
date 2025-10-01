@@ -1,76 +1,76 @@
-from flask import Flask
+from flask import Flask, jsonify
 import os
-import tempfile
 import oci
-import time
+import tempfile
 
 app = Flask(__name__)
 
-# --- ENV VARS ---
-OCI_USER = os.getenv("OCI_USER")
-OCI_TENANCY = os.getenv("OCI_TENANCY")
-OCI_FINGERPRINT = os.getenv("OCI_FINGERPRINT")
-OCI_PRIVATE_KEY_CONTENT = os.getenv("OCI_PRIVATE_KEY")
-OCI_REGION = os.getenv("OCI_REGION")
-SUBNET_ID = os.getenv("SUBNET_ID")
-SSH_PUBLIC_KEY = os.getenv("SSH_PUBLIC_KEY")
+# Basit test endpoint
+@app.route("/")
+def home():
+    return "OCI Instance Creator is running!"
 
-# --- Write private key to temp file ---
-temp_key_file = tempfile.NamedTemporaryFile(delete=False)
-temp_key_file.write(OCI_PRIVATE_KEY_CONTENT.encode())
-temp_key_file.close()
-PRIVATE_KEY_PATH = temp_key_file.name
+@app.route("/status")
+def status():
+    return jsonify({"status": "ready"})
 
-# --- OCI Config ---
+
+# OCI Client ayarları environment variable'dan alınır
+OCI_USER = os.environ.get("OCI_USER")
+OCI_TENANCY = os.environ.get("OCI_TENANCY")
+OCI_FINGERPRINT = os.environ.get("OCI_FINGERPRINT")
+OCI_REGION = os.environ.get("OCI_REGION")
+SUBNET_ID = os.environ.get("SUBNET_ID")
+OCI_PRIVATE_KEY_CONTENT = os.environ.get("OCI_PRIVATE_KEY")
+
+# Private key geçici dosya olarak yazılıyor
+with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
+    f.write(OCI_PRIVATE_KEY_CONTENT)
+    PRIVATE_KEY_PATH = f.name
+
+# OCI config
 config = {
     "user": OCI_USER,
-    "tenancy": OCI_TENANCY,
     "fingerprint": OCI_FINGERPRINT,
-    "key_file": PRIVATE_KEY_PATH,
-    "region": OCI_REGION
+    "tenancy": OCI_TENANCY,
+    "region": OCI_REGION,
+    "key_file": PRIVATE_KEY_PATH
 }
 
 compute_client = oci.core.ComputeClient(config)
 
-# --- VM parameters ---
-INSTANCE_DISPLAY_NAME = "Render-Auto-Instance"
-AVAIL_DOMAIN = None  # Optional: leave None for auto
-IMAGE_ID = "ocid1.image.oc1.me-abudhabi-1.amaaaaaabqku7jqag7lrxakpxhcxobmaljwpgkbygtpv5lk6qv5hdcavtnqa"  # Canonical Ubuntu 24.04 Minimal aarch64
-SHAPE = "VM.Standard.A1.Flex"
-WAIT_INTERVAL = 10  # seconds between retries
+# Örnek: Instance oluşturma fonksiyonu (sadece deneme için)
+def launch_instance():
+    # Buraya güncel Image OCID ve Shape yazılacak
+    image_id = "ocid1.image.oc1.me-abudhabi-1.aaaaaaaaaaaexample"
+    shape = "VM.Standard.A1.Flex"
+    display_name = "render-auto-instance"
 
-instance_created = False
-
-def create_instance():
-    global instance_created
-    try:
-        launch_details = oci.core.models.LaunchInstanceDetails(
-            compartment_id=OCI_TENANCY,
-            display_name=INSTANCE_DISPLAY_NAME,
-            shape=SHAPE,
-            availability_domain=AVAIL_DOMAIN,
-            create_vnic_details=oci.core.models.CreateVnicDetails(
-                subnet_id=SUBNET_ID,
-                assign_public_ip=True
-            ),
-            source_details=oci.core.models.InstanceSourceViaImageDetails(
-                image_id=IMAGE_ID
-            ),
-            metadata={"ssh_authorized_keys": SSH_PUBLIC_KEY}
+    instance_details = oci.core.models.LaunchInstanceDetails(
+        compartment_id=OCI_TENANCY,
+        display_name=display_name,
+        shape=shape,
+        source_details=oci.core.models.InstanceSourceViaImageDetails(
+            image_id=image_id
+        ),
+        create_vnic_details=oci.core.models.CreateVnicDetails(
+            subnet_id=SUBNET_ID
         )
-        response = compute_client.launch_instance(launch_details)
-        instance_created = True
-        return f"Instance creation succeeded! OCID: {response.data.id}"
-    except Exception as e:
-        return f"Error: {str(e)}"
+    )
 
-@app.route("/")
-def index():
-    if instance_created:
-        return "<h2>✅ Instance başarıyla oluşturuldu!</h2>"
-    else:
-        msg = create_instance()
-        return f"<h2>Durum: {msg}</h2>"
+    try:
+        response = compute_client.launch_instance(instance_details)
+        return {"status": "launched", "instance_id": response.data.id}
+    except oci.exceptions.ServiceError as e:
+        return {"status": "error", "message": str(e)}
 
+@app.route("/launch")
+def launch():
+    result = launch_instance()
+    return jsonify(result)
+
+
+# Render port binding
+port = int(os.environ.get("PORT", 8080))
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080")))
+    app.run(host="0.0.0.0", port=port)
