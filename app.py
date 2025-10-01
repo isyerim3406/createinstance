@@ -1,33 +1,37 @@
-import os
-import tempfile
-from flask import Flask
-from dotenv import load_dotenv
-import oci
-
-# Load .env
-load_dotenv()
+from flask import Flask, jsonify
+import threading
+import time
 
 app = Flask(__name__)
 
-# Private key’i temp dosyaya yaz
-private_key_content = os.getenv("OCI_PRIVATE_KEY")
-with tempfile.NamedTemporaryFile(delete=False, mode="w") as f:
-    f.write(private_key_content)
-    key_file_path = f.name
+# Başarı bayrağı
+success = False
 
-# Oracle SDK config
-config = {
-    "user": os.getenv("OCI_USER"),
-    "fingerprint": os.getenv("OCI_FINGERPRINT"),
-    "tenancy": os.getenv("OCI_TENANCY"),
-    "region": os.getenv("OCI_REGION"),
-    "key_file": key_file_path
-}
+def try_create_vm():
+    global success
+    while not success:
+        # Buraya Oracle Cloud API çağrısı gelecek
+        # Eğer VM oluşturulursa success = True
+        # Örnek: success = oracle_create_instance()
+        print("Deneme yapılıyor...")
+        # Simülasyon: 10 saniyede bir dene
+        time.sleep(10)
+        # Örnek başarılı olursa:
+        # success = True
+
+# Arka planda sürekli deneme için thread
+threading.Thread(target=try_create_vm, daemon=True).start()
 
 @app.route("/")
-def home():
-    return "OCI instance ile web servisi çalışıyor!"
+def index():
+    if success:
+        return "✅ VM başarıyla oluşturuldu!"
+    else:
+        return "⏳ Henüz VM oluşturulamadı, deneme devam ediyor..."
+
+@app.route("/status")
+def status():
+    return jsonify({"success": success})
 
 if __name__ == "__main__":
-    port = int(os.getenv("APP_PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=8080)
