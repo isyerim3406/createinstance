@@ -1,55 +1,69 @@
 import os
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 import oci
+import traceback
 
 app = Flask(__name__)
 
+# Debug endpoint - Config'i test et
+@app.route("/debug/config")
+def debug_config():
+    """Environment variable'ları kontrol et (güvenli)"""
+    try:
+        config = {
+            "tenancy": os.environ.get("OCI_TENANCY_OCID", "NOT_SET")[:20] + "...",
+            "user": os.environ.get("OCI_USER_OCID", "NOT_SET")[:20] + "...",
+            "fingerprint": os.environ.get("OCI_FINGERPRINT", "NOT_SET"),
+            "region": os.environ.get("OCI_REGION", "me-abudhabi-1"),
+            "private_key_length": len(os.environ.get("OCI_PRIVATE_KEY", "")),
+            "private_key_starts_with": os.environ.get("OCI_PRIVATE_KEY", "")[:30],
+            "compartment": os.environ.get("OCI_COMPARTMENT_OCID", "NOT_SET")[:20] + "..."
+        }
+        return jsonify(config), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 # Signer fonksiyonu - Düzeltilmiş versiyon
 def get_signer():
-    """
-    OCI Signer oluşturur.
-    Auth kullanarak daha esnek yapı.
-    """
-    # Private key'i environment variable'dan al
+    """OCI Signer'ı oluşturur"""
     private_key_content = os.environ["OCI_PRIVATE_KEY"]
-    
+
     # Eğer \n karakterleri escaped ise düzelt
     if "\\n" in private_key_content:
         private_key_content = private_key_content.replace("\\n", "\n")
-    
-    # Config dict oluştur
-    config = {
-        "tenancy": os.environ["OCI_TENANCY_OCID"],
-        "user": os.environ["OCI_USER_OCID"],
-        "fingerprint": os.environ["OCI_FINGERPRINT"],
-        "key_content": private_key_content,
-        "region": os.environ.get("OCI_REGION", "me-abudhabi-1")
-    }
-    
-    # oci.config.validate_config(config)  # Opsiyonel: Config doğrulama
-    
-    # Signer yerine doğrudan config kullan
-    return config
+
+    if not private_key_content.startswith("-----BEGIN"):
+        raise ValueError("Private key must start with -----BEGIN RSA PRIVATE KEY-----")
+
+    if not private_key_content.strip().endswith("-----END RSA PRIVATE KEY-----"):
+        raise ValueError("Private key must end with -----END RSA PRIVATE KEY-----")
+
+    signer = oci.signer.Signer(
+        tenancy=os.environ["OCI_TENANCY_OCID"],
+        user=os.environ["OCI_USER_OCID"],
+        fingerprint=os.environ["OCI_FINGERPRINT"],
+        private_key_content=private_key_content,
+        pass_phrase=None,
+        region=os.environ.get("OCI_REGION", "me-abudhabi-1")
+    )
+
+    return signer
 
 # Instance başlatma fonksiyonu
 def launch_instance():
     try:
-        # Config ile compute client oluştur (signer yerine)
-        config = get_signer()
-        compute_client = oci.core.ComputeClient(config)
-        
-        # Shape configuration (ARM için)
+        compute_client = oci.core.ComputeClient(config={}, signer=get_signer())
+
         shape_config = oci.core.models.LaunchInstanceShapeConfigDetails(
-            ocpus=1.0,  # 1 OCPU
-            memory_in_gbs=6.0  # 6GB RAM
+            ocpus=1.0,
+            memory_in_gbs=6.0
         )
-        
-        # Instance detayları
+
         instance_details = oci.core.models.LaunchInstanceDetails(
             availability_domain=os.environ.get("OCI_AVAILABILITY_DOMAIN", "Uocm:ME-ABUDHABI-1-AD-1"),
             compartment_id=os.environ["OCI_COMPARTMENT_OCID"],
             shape="VM.Standard.A1.Flex",
-            shape_config=shape_config,  # Flex shape için gerekli
+            shape_config=shape_config,
             source_details=oci.core.models.InstanceSourceViaImageDetails(
                 source_type="image",
                 image_id=os.environ["OCI_IMAGE_ID"]
@@ -63,10 +77,9 @@ def launch_instance():
                 "ssh_authorized_keys": os.environ.get("OCI_SSH_PUBLIC_KEY", "")
             } if os.environ.get("OCI_SSH_PUBLIC_KEY") else {}
         )
-        
-        # Instance'ı başlat
+
         response = compute_client.launch_instance(instance_details)
-        
+
         return {
             "status": "success",
             "message": "Instance launched successfully",
@@ -74,7 +87,7 @@ def launch_instance():
             "display_name": response.data.display_name,
             "lifecycle_state": response.data.lifecycle_state
         }
-        
+
     except oci.exceptions.ServiceError as e:
         return {
             "status": "error",
@@ -99,30 +112,23 @@ def launch_instance():
 # Sağlık kontrolü endpoint'i
 @app.route("/health")
 def health():
-    """Render health check için"""
     return jsonify({"status": "healthy"}), 200
 
 # Ana endpoint
 @app.route("/")
 def home():
-    """Ana sayfa - instance başlatır"""
     result = launch_instance()
-    
     if result["status"] == "success":
         return jsonify(result), 200
     else:
         return jsonify(result), 500
 
-# Instance durumunu kontrol et
+# Diğer CRUD ve listeleme endpointleri
 @app.route("/check/<instance_id>")
 def check_instance(instance_id):
-    """Belirli bir instance'ın durumunu kontrol et"""
     try:
-        config = get_signer()
-        compute_client = oci.core.ComputeClient(config)
-        
+        compute_client = oci.core.ComputeClient(config={}, signer=get_signer())
         response = compute_client.get_instance(instance_id)
-        
         return jsonify({
             "status": "success",
             "instance_id": response.data.id,
@@ -131,106 +137,52 @@ def check_instance(instance_id):
             "availability_domain": response.data.availability_domain,
             "time_created": str(response.data.time_created)
         }), 200
-        
     except Exception as e:
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
+        return jsonify({"status": "error", "message": str(e)}), 500
 
-# Tüm instance'ları listele
 @app.route("/list")
 def list_instances():
-    """Compartment'taki tüm instance'ları listele"""
     try:
-        config = get_signer()
-        compute_client = oci.core.ComputeClient(config)
-        
+        compute_client = oci.core.ComputeClient(config={}, signer=get_signer())
         instances = compute_client.list_instances(
             compartment_id=os.environ["OCI_COMPARTMENT_OCID"]
         )
-        
         instance_list = [{
             "id": inst.id,
             "display_name": inst.display_name,
             "lifecycle_state": inst.lifecycle_state,
             "shape": inst.shape
         } for inst in instances.data]
-        
-        return jsonify({
-            "status": "success",
-            "count": len(instance_list),
-            "instances": instance_list
-        }), 200
-        
+        return jsonify({"status": "success", "count": len(instance_list), "instances": instance_list}), 200
     except Exception as e:
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
+        return jsonify({"status": "error", "message": str(e)}), 500
 
-# Instance durdur
 @app.route("/stop/<instance_id>")
 def stop_instance(instance_id):
-    """Instance'ı durdur"""
     try:
-        config = get_signer()
-        compute_client = oci.core.ComputeClient(config)
-        
+        compute_client = oci.core.ComputeClient(config={}, signer=get_signer())
         compute_client.instance_action(instance_id, "STOP")
-        
-        return jsonify({
-            "status": "success",
-            "message": f"Instance {instance_id} stopping..."
-        }), 200
-        
+        return jsonify({"status": "success", "message": f"Instance {instance_id} stopping..."}), 200
     except Exception as e:
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
+        return jsonify({"status": "error", "message": str(e)}), 500
 
-# Instance başlat
 @app.route("/start/<instance_id>")
 def start_instance(instance_id):
-    """Instance'ı başlat"""
     try:
-        config = get_signer()
-        compute_client = oci.core.ComputeClient(config)
-        
+        compute_client = oci.core.ComputeClient(config={}, signer=get_signer())
         compute_client.instance_action(instance_id, "START")
-        
-        return jsonify({
-            "status": "success",
-            "message": f"Instance {instance_id} starting..."
-        }), 200
-        
+        return jsonify({"status": "success", "message": f"Instance {instance_id} starting..."}), 200
     except Exception as e:
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
+        return jsonify({"status": "error", "message": str(e)}), 500
 
-# Instance sil
 @app.route("/terminate/<instance_id>")
 def terminate_instance(instance_id):
-    """Instance'ı kalıcı olarak sil"""
     try:
-        config = get_signer()
-        compute_client = oci.core.ComputeClient(config)
-        
+        compute_client = oci.core.ComputeClient(config={}, signer=get_signer())
         compute_client.terminate_instance(instance_id)
-        
-        return jsonify({
-            "status": "success",
-            "message": f"Instance {instance_id} terminating..."
-        }), 200
-        
+        return jsonify({"status": "success", "message": f"Instance {instance_id} terminating..."}), 200
     except Exception as e:
-        return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
