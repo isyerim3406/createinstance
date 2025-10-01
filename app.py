@@ -1,76 +1,66 @@
 from flask import Flask, jsonify
 import os
+import threading
+import time
+# OCI SDK
 import oci
-import tempfile
 
 app = Flask(__name__)
 
-# Basit test endpoint
-@app.route("/")
-def home():
-    return "OCI Instance Creator is running!"
+# Durum değişkeni
+INSTANCE_CREATED = False
 
+# /status endpoint
 @app.route("/status")
 def status():
-    return jsonify({"status": "ready"})
+    if INSTANCE_CREATED:
+        return "✅ Instance başarıyla oluşturuldu"
+    else:
+        return "⏳ Instance henüz oluşturulmadı veya deneme devam ediyor"
 
-
-# OCI Client ayarları environment variable'dan alınır
-OCI_USER = os.environ.get("OCI_USER")
-OCI_TENANCY = os.environ.get("OCI_TENANCY")
-OCI_FINGERPRINT = os.environ.get("OCI_FINGERPRINT")
-OCI_REGION = os.environ.get("OCI_REGION")
-SUBNET_ID = os.environ.get("SUBNET_ID")
-OCI_PRIVATE_KEY_CONTENT = os.environ.get("OCI_PRIVATE_KEY")
-
-# Private key geçici dosya olarak yazılıyor
-with tempfile.NamedTemporaryFile(mode="w", delete=False) as f:
-    f.write(OCI_PRIVATE_KEY_CONTENT)
-    PRIVATE_KEY_PATH = f.name
-
-# OCI config
-config = {
-    "user": OCI_USER,
-    "fingerprint": OCI_FINGERPRINT,
-    "tenancy": OCI_TENANCY,
-    "region": OCI_REGION,
-    "key_file": PRIVATE_KEY_PATH
-}
-
-compute_client = oci.core.ComputeClient(config)
-
-# Örnek: Instance oluşturma fonksiyonu (sadece deneme için)
-def launch_instance():
-    # Buraya güncel Image OCID ve Shape yazılacak
-    image_id = "ocid1.image.oc1.me-abudhabi-1.aaaaaaaaaaaexample"
-    shape = "VM.Standard.A1.Flex"
-    display_name = "render-auto-instance"
-
-    instance_details = oci.core.models.LaunchInstanceDetails(
-        compartment_id=OCI_TENANCY,
-        display_name=display_name,
-        shape=shape,
-        source_details=oci.core.models.InstanceSourceViaImageDetails(
-            image_id=image_id
-        ),
-        create_vnic_details=oci.core.models.CreateVnicDetails(
-            subnet_id=SUBNET_ID
-        )
-    )
-
+# Arka planda instance oluşturma işlevi
+def create_instance():
+    global INSTANCE_CREATED
     try:
-        response = compute_client.launch_instance(instance_details)
-        return {"status": "launched", "instance_id": response.data.id}
-    except oci.exceptions.ServiceError as e:
-        return {"status": "error", "message": str(e)}
+        config = {
+            "user": os.environ["OCI_USER"],
+            "key_file": "/tmp/oci_private_key.pem",
+            "fingerprint": os.environ["OCI_FINGERPRINT"],
+            "tenancy": os.environ["OCI_TENANCY"],
+            "region": os.environ["OCI_REGION"]
+        }
 
-@app.route("/launch")
-def launch():
-    result = launch_instance()
-    return jsonify(result)
+        # Private key temp dosyası
+        with open(config["key_file"], "w") as f:
+            f.write(os.environ["OCI_PRIVATE_KEY"])
+        
+        compute_client = oci.core.ComputeClient(config)
+        
+        launch_details = oci.core.models.LaunchInstanceDetails(
+            compartment_id=os.environ["OCI_TENANCY"],
+            display_name="MyInstance",
+            shape="VM.Standard.A1.Flex",
+            source_details=oci.core.models.InstanceSourceViaImageDetails(
+                source_type="image",
+                image_id="ocid1.image.oc1.me-abudhabi-1.xxxxxxxx"
+            ),
+            create_vnic_details=oci.core.models.CreateVnicDetails(
+                subnet_id=os.environ["SUBNET_ID"],
+                assign_public_ip=True
+            ),
+            metadata={"ssh_authorized_keys": os.environ["SSH_PUBLIC_KEY"]}
+        )
 
+        response = compute_client.launch_instance(launch_details)
+        if response.status == 200 or response.status == 201:
+            INSTANCE_CREATED = True
 
-# Render port binding
+    except Exception as e:
+        print("Hata oluştu:", e)
+
+# Uygulama başlarken thread ile çalıştır
+threading.Thread(target=create_instance, daemon=True).start()
+
+# Flask port ayarı
 port = int(os.environ.get("PORT", 8080))
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=port)
+app.run(host="0.0.0.0", port=port)
