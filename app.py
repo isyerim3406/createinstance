@@ -1,71 +1,89 @@
-from flask import Flask
 import os
-import oci
 import time
+import tempfile
+from flask import Flask, jsonify
+import oci
 
 app = Flask(__name__)
 
-# ================= ENV DEĞİŞKENLERİ =================
+# ENV değişkenleri
 OCI_USER = os.environ.get("OCI_USER")
 OCI_TENANCY = os.environ.get("OCI_TENANCY")
-OCI_REGION = os.environ.get("OCI_REGION", "me-abudhabi-1")
 OCI_FINGERPRINT = os.environ.get("OCI_FINGERPRINT")
-OCI_PRIVATE_KEY_PATH = "/tmp/oci_api_key.pem"
+OCI_REGION = os.environ.get("OCI_REGION")
 SUBNET_ID = os.environ.get("SUBNET_ID")
 SSH_PUBLIC_KEY = os.environ.get("SSH_PUBLIC_KEY")
+OCI_PRIVATE_KEY = os.environ.get("OCI_PRIVATE_KEY")  # temp dosya olarak kullanılacak
 
-# ================= PRIVATE KEY TEMP DOSYA =================
-if not os.path.exists(OCI_PRIVATE_KEY_PATH):
-    with open(OCI_PRIVATE_KEY_PATH, "w") as f:
-        f.write(os.environ.get("OCI_PRIVATE_KEY", ""))
-    os.chmod(OCI_PRIVATE_KEY_PATH, 0o600)
+STATUS = {"last_attempt": None, "last_result": None, "message": None}
 
-# ================= OCI CLIENT =================
-config = {
-    "user": OCI_USER,
-    "tenancy": OCI_TENANCY,
-    "region": OCI_REGION,
-    "fingerprint": OCI_FINGERPRINT,
-    "key_file": OCI_PRIVATE_KEY_PATH
-}
+def create_temp_key_file(private_key_str):
+    temp_file = tempfile.NamedTemporaryFile(delete=False, mode="w")
+    temp_file.write(private_key_str)
+    temp_file.close()
+    return temp_file.name
 
-compute_client = oci.core.ComputeClient(config)
-
-# ================= INSTANCE DURUMU =================
-instance_launched = False
-instance_ocid = None
-
-def launch_instance():
-    global instance_launched, instance_ocid
-    if instance_launched:
-        return "Instance zaten oluşturuldu: " + instance_ocid
-
+def attempt_instance_creation():
+    global STATUS
+    STATUS["last_attempt"] = time.strftime("%Y-%m-%d %H:%M:%S")
     try:
+        # Private key temp dosyası
+        private_key_file = create_temp_key_file(OCI_PRIVATE_KEY)
+
+        # Config
+        config = {
+            "user": OCI_USER,
+            "tenancy": OCI_TENANCY,
+            "fingerprint": OCI_FINGERPRINT,
+            "region": OCI_REGION,
+            "key_file": private_key_file,
+        }
+
+        compute_client = oci.core.ComputeClient(config)
+
+        # Instance details
         instance_details = oci.core.models.LaunchInstanceDetails(
             compartment_id=OCI_TENANCY,
-            display_name="auto-instance",
+            display_name="Render-Test-VM",
             shape="VM.Standard.A1.Flex",
-            subnet_id=SUBNET_ID,
-            image_id="ocid1.image.oc1.me-abudhabi-1.aaaaaaaa3fnh62i7pklfip3yx2usxwjmurgj7g62zgpgmcfjg3vf6wu56eoq",  # Ubuntu 24.04 Minimal aarch64
+            create_vnic_details=oci.core.models.CreateVnicDetails(subnet_id=SUBNET_ID),
+            source_details=oci.core.models.InstanceSourceViaImageDetails(
+                source_type="image",
+                image_id="ocid1.image.oc1.me-abudhabi-1.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"  # Canonical Ubuntu 24.04 Minimal aarch64
+            ),
             metadata={"ssh_authorized_keys": SSH_PUBLIC_KEY}
         )
+
         response = compute_client.launch_instance(instance_details)
-        instance_ocid = response.data.id
-        instance_launched = True
-        return f"✅ Instance oluşturuldu: {instance_ocid}"
-    except oci.exceptions.ServiceError as e:
-        return f"❌ Hata oluştu: {e}"
+        STATUS["last_result"] = "success"
+        STATUS["message"] = f"Instance launched: {response.data.id}"
 
-# ================= FLASK ROUTES =================
+    except Exception as e:
+        STATUS["last_result"] = "failure"
+        STATUS["message"] = str(e)
+
+    finally:
+        if os.path.exists(private_key_file):
+            os.remove(private_key_file)
+
+# Background loop
+def background_worker():
+    while True:
+        attempt_instance_creation()
+        time.sleep(120)  # 2 dakika bekle, istersen arttırabilirsin
+
+import threading
+threading.Thread(target=background_worker, daemon=True).start()
+
 @app.route("/")
-def home():
-    return "OCI Instance Creator is running!"
+def index():
+    if STATUS["last_result"] == "success":
+        return f"✅ OCI Instance Creator is running! Last instance: {STATUS['message']}"
+    elif STATUS["last_result"] == "failure":
+        return f"❌ Hata oluştu: {STATUS['message']}"
+    else:
+        return "⏳ Başlatılıyor..."
 
-@app.route("/status")
-def status():
-    return launch_instance()
-
-# ================= MAIN =================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
