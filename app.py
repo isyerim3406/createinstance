@@ -1,37 +1,63 @@
-from flask import Flask, jsonify
-import threading
-import time
+import os
+import tempfile
+from flask import Flask
+import oci
 
 app = Flask(__name__)
 
-# Başarı bayrağı
-success = False
+# Environment variables
+OCI_USER = os.environ['OCI_USER']
+OCI_TENANCY = os.environ['OCI_TENANCY']
+OCI_FINGERPRINT = os.environ['OCI_FINGERPRINT']
+OCI_PRIVATE_KEY_CONTENT = os.environ['OCI_PRIVATE_KEY']
+OCI_REGION = os.environ['OCI_REGION']
+SUBNET_ID = os.environ['SUBNET_ID']
+SSH_PUBLIC_KEY = os.environ['SSH_PUBLIC_KEY']
 
-def try_create_vm():
-    global success
-    while not success:
-        # Buraya Oracle Cloud API çağrısı gelecek
-        # Eğer VM oluşturulursa success = True
-        # Örnek: success = oracle_create_instance()
-        print("Deneme yapılıyor...")
-        # Simülasyon: 10 saniyede bir dene
-        time.sleep(10)
-        # Örnek başarılı olursa:
-        # success = True
+# Image and Shape
+IMAGE_ID = "ocid1.image.oc1.me-abudhabi-1.aaaaaaaaaqvmwhc37ngnjgdy4jyegnudltaqwdufutvxuzlrylphlqqfj6ya"  # Ubuntu 24.04 Minimal aarch64
+SHAPE = "VM.Standard.A1.Flex"  # Always Free-eligible
 
-# Arka planda sürekli deneme için thread
-threading.Thread(target=try_create_vm, daemon=True).start()
+# Write private key to a temp file for OCI SDK
+with tempfile.NamedTemporaryFile(delete=False) as f:
+    f.write(OCI_PRIVATE_KEY_CONTENT.encode())
+    PRIVATE_KEY_FILE = f.name
+
+# OCI client
+config = {
+    "user": OCI_USER,
+    "tenancy": OCI_TENANCY,
+    "fingerprint": OCI_FINGERPRINT,
+    "key_file": PRIVATE_KEY_FILE,
+    "region": OCI_REGION
+}
+
+compute_client = oci.core.ComputeClient(config)
 
 @app.route("/")
-def index():
-    if success:
-        return "✅ VM başarıyla oluşturuldu!"
-    else:
-        return "⏳ Henüz VM oluşturulamadı, deneme devam ediyor..."
+def create_instance():
+    try:
+        instance_name = "auto-instance"
+        launch_details = oci.core.models.LaunchInstanceDetails(
+            compartment_id=OCI_TENANCY,
+            display_name=instance_name,
+            shape=SHAPE,
+            image_id=IMAGE_ID,
+            create_vnic_details=oci.core.models.CreateVnicDetails(
+                subnet_id=SUBNET_ID,
+                assign_public_ip=True
+            ),
+            metadata={
+                "ssh_authorized_keys": SSH_PUBLIC_KEY
+            }
+        )
 
-@app.route("/status")
-def status():
-    return jsonify({"success": success})
+        response = compute_client.launch_instance(launch_details)
+        instance_ocid = response.data.id
+        return f"Başarılı! Instance OCID: {instance_ocid}"
+
+    except Exception as e:
+        return f"Hata oluştu: {str(e)}"
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
