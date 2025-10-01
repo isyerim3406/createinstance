@@ -22,21 +22,60 @@ def debug_config():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# Signer fonksiyonu - DÜZELTİLDİ
+# Auth test endpoint
+@app.route("/debug/auth")
+def debug_auth():
+    """OCI authentication'ı test et"""
+    try:
+        config = get_signer()
+        
+        # Identity client ile basit bir test
+        identity_client = oci.identity.IdentityClient(config)
+        user = identity_client.get_user(os.environ["OCI_USER_OCID"])
+        
+        return jsonify({
+            "status": "success",
+            "message": "Authentication successful",
+            "user_name": user.data.name,
+            "user_id": user.data.id
+        }), 200
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "error_type": type(e).__name__,
+            "message": str(e)
+        }), 500
+
+# Signer fonksiyonu - BASE64 ile
 def get_signer():
-    # Private key'i düzgün formata çevir
-    private_key = os.environ["OCI_PRIVATE_KEY"].replace("\\n", "\n")
+    import tempfile
+    import base64
     
-    # Geçici dosya oluşturmadan config dict kullan
+    # Base64 encoded private key'i decode et veya direkt kullan
+    if "OCI_PRIVATE_KEY_BASE64" in os.environ:
+        private_key_encoded = os.environ["OCI_PRIVATE_KEY_BASE64"]
+        private_key = base64.b64decode(private_key_encoded).decode('utf-8')
+    elif "OCI_PRIVATE_KEY" in os.environ:
+        private_key = os.environ["OCI_PRIVATE_KEY"]
+        if "\\n" in private_key:
+            private_key = private_key.replace("\\n", "\n")
+    else:
+        raise KeyError("OCI_PRIVATE_KEY or OCI_PRIVATE_KEY_BASE64")
+    
+    # Geçici dosyaya yaz
+    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.pem') as key_file:
+        key_file.write(private_key)
+        key_file_path = key_file.name
+    
+    # Config dict oluştur
     config = {
         "tenancy": os.environ["OCI_TENANCY_OCID"],
         "user": os.environ["OCI_USER_OCID"],
         "fingerprint": os.environ["OCI_FINGERPRINT"],
-        "key_content": private_key,
+        "key_file": key_file_path,
         "region": os.environ.get("OCI_REGION", "me-abudhabi-1")
     }
     
-    # oci.config.validate_config(config)  # İsteğe bağlı validasyon
     return config
 
 # Instance başlatma fonksiyonu
