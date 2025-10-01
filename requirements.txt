@@ -1,3 +1,2 @@
-flask
-python-dotenv
-oci
+Flask==2.3.4
+oci==3.99.0
