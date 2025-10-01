@@ -1,17 +1,3 @@
-# Python cache ve temp dosyaları
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-
-# Virtual environment
-venv/
 .env
-
-# Private keyler ve secret dosyalar
-*.pem
-
-# IDE ve editör dosyaları
-.vscode/
-.idea/
-*.swp
+*.pyc
+__pycache__/
