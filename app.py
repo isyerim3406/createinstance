@@ -1,7 +1,6 @@
 import os
 from flask import Flask, jsonify, request
 import oci
-import traceback
 
 app = Flask(__name__)
 
@@ -23,22 +22,10 @@ def debug_config():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# Signer fonksiyonu - Düzeltilmiş
+# Signer fonksiyonu
 def get_signer():
-    """OCI Signer'ı oluşturur"""
-    private_key_content = os.environ["OCI_PRIVATE_KEY"]
-
-    # Eğer \n karakterleri escaped ise düzelt
-    if "\\n" in private_key_content:
-        private_key_content = private_key_content.replace("\\n", "\n")
-
-    if not private_key_content.startswith("-----BEGIN"):
-        raise ValueError("Private key must start with -----BEGIN RSA PRIVATE KEY-----")
-
-    if not private_key_content.strip().endswith("-----END RSA PRIVATE KEY-----"):
-        raise ValueError("Private key must end with -----END RSA PRIVATE KEY-----")
-
-    signer = oci.signer.Signer(
+    private_key_content = os.environ["OCI_PRIVATE_KEY"].replace("\\n", "\n")
+    return oci.signer.Signer(
         tenancy=os.environ["OCI_TENANCY_OCID"],
         user=os.environ["OCI_USER_OCID"],
         fingerprint=os.environ["OCI_FINGERPRINT"],
@@ -46,19 +33,12 @@ def get_signer():
         pass_phrase=None
     )
 
-    return signer
-
-# ComputeClient oluştur
-def get_compute_client():
-    signer = get_signer()
-    config = {"region": os.environ.get("OCI_REGION", "me-abudhabi-1")}
-    return oci.core.ComputeClient(config=config, signer=signer)
-
 # Instance başlatma fonksiyonu
 def launch_instance():
     try:
-        compute_client = get_compute_client()
-
+        signer = get_signer()
+        compute_client = oci.core.ComputeClient(config={}, signer=signer)
+        
         shape_config = oci.core.models.LaunchInstanceShapeConfigDetails(
             ocpus=1.0,
             memory_in_gbs=6.0
@@ -82,9 +62,9 @@ def launch_instance():
                 "ssh_authorized_keys": os.environ.get("OCI_SSH_PUBLIC_KEY", "")
             } if os.environ.get("OCI_SSH_PUBLIC_KEY") else {}
         )
-
+        
         response = compute_client.launch_instance(instance_details)
-
+        
         return {
             "status": "success",
             "message": "Instance launched successfully",
@@ -114,7 +94,7 @@ def launch_instance():
             "message": str(e)
         }
 
-# Health check
+# Sağlık kontrolü
 @app.route("/health")
 def health():
     return jsonify({"status": "healthy"}), 200
@@ -123,18 +103,15 @@ def health():
 @app.route("/")
 def home():
     result = launch_instance()
-    if result["status"] == "success":
-        return jsonify(result), 200
-    else:
-        return jsonify(result), 500
+    return (jsonify(result), 200) if result["status"] == "success" else (jsonify(result), 500)
 
-# Instance durum kontrol
+# Instance durumunu kontrol
 @app.route("/check/<instance_id>")
 def check_instance(instance_id):
     try:
-        compute_client = get_compute_client()
+        signer = get_signer()
+        compute_client = oci.core.ComputeClient(config={}, signer=signer)
         response = compute_client.get_instance(instance_id)
-
         return jsonify({
             "status": "success",
             "instance_id": response.data.id,
@@ -150,7 +127,8 @@ def check_instance(instance_id):
 @app.route("/list")
 def list_instances():
     try:
-        compute_client = get_compute_client()
+        signer = get_signer()
+        compute_client = oci.core.ComputeClient(config={}, signer=signer)
         instances = compute_client.list_instances(compartment_id=os.environ["OCI_COMPARTMENT_OCID"])
         instance_list = [{
             "id": inst.id,
@@ -158,7 +136,6 @@ def list_instances():
             "lifecycle_state": inst.lifecycle_state,
             "shape": inst.shape
         } for inst in instances.data]
-
         return jsonify({"status": "success", "count": len(instance_list), "instances": instance_list}), 200
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
@@ -167,7 +144,8 @@ def list_instances():
 @app.route("/stop/<instance_id>")
 def stop_instance(instance_id):
     try:
-        compute_client = get_compute_client()
+        signer = get_signer()
+        compute_client = oci.core.ComputeClient(config={}, signer=signer)
         compute_client.instance_action(instance_id, "STOP")
         return jsonify({"status": "success", "message": f"Instance {instance_id} stopping..."}), 200
     except Exception as e:
@@ -177,7 +155,8 @@ def stop_instance(instance_id):
 @app.route("/start/<instance_id>")
 def start_instance(instance_id):
     try:
-        compute_client = get_compute_client()
+        signer = get_signer()
+        compute_client = oci.core.ComputeClient(config={}, signer=signer)
         compute_client.instance_action(instance_id, "START")
         return jsonify({"status": "success", "message": f"Instance {instance_id} starting..."}), 200
     except Exception as e:
@@ -187,7 +166,8 @@ def start_instance(instance_id):
 @app.route("/terminate/<instance_id>")
 def terminate_instance(instance_id):
     try:
-        compute_client = get_compute_client()
+        signer = get_signer()
+        compute_client = oci.core.ComputeClient(config={}, signer=signer)
         compute_client.terminate_instance(instance_id)
         return jsonify({"status": "success", "message": f"Instance {instance_id} terminating..."}), 200
     except Exception as e:
