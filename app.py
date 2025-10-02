@@ -58,13 +58,15 @@ def get_signer():
     elif "OCI_PRIVATE_KEY" in os.environ:
         private_key = os.environ["OCI_PRIVATE_KEY"]
         if "\\n" in private_key:
+            # AWK çıktısındaki çift ters eğik çizgiyi (\n) gerçek yeni satıra dönüştür
             private_key = private_key.replace("\\n", "\n")
     else:
         raise KeyError("OCI_PRIVATE_KEY or OCI_PRIVATE_KEY_BASE64")
     
-    # Geçici dosyaya yaz
-    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.pem') as key_file:
-        key_file.write(private_key)
+    # Geçici dosyaya yazma kısmındaki UnicodeDecodeError hatası çözümü:
+    # 'w+' modu ve 'utf-8' encoding kullanılarak metin yazma garantilenir.
+    with tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.pem', encoding='utf-8', newline=None) as key_file:
+        key_file.write(private_key.strip()) 
         key_file_path = key_file.name
     
     # Config dict oluştur
@@ -190,6 +192,7 @@ def list_instances():
 def stop_instance(instance_id):
     try:
         signer = get_signer()
+        # OCI istemcileri config dict'i veya signer alabilir. Burada signer kullanıldı.
         compute_client = oci.core.ComputeClient(config={}, signer=signer)
         compute_client.instance_action(instance_id, "STOP")
         return jsonify({"status": "success", "message": f"Instance {instance_id} stopping..."}), 200
