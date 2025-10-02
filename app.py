@@ -87,8 +87,8 @@ def launch_instance():
         compute_client = oci.core.ComputeClient(config)
         
         shape_config = oci.core.models.LaunchInstanceShapeConfigDetails(
-            ocpus=1,
-            memory_in_gbs=6
+            ocpus=1.0,
+            memory_in_gbs=6.0
         )
 
         instance_details = oci.core.models.LaunchInstanceDetails(
