@@ -5,8 +5,8 @@ import tempfile
 import base64
 import time
 import requests
-import datetime # GMT+3 zaman dilimi düzeltmesi için eklendi
-import threading # (Gerekirse ileride arka plan işleri için bırakıldı, şu an kullanılmıyor)
+import datetime
+import threading
 
 app = Flask(__name__)
 
@@ -33,8 +33,8 @@ def send_telegram_message(message):
     except Exception as e:
         print(f"Telegram bildirimi gönderme başarısız oldu: {e}")
 
-# --- SIGNER VE KONFİGÜRASYON FONKSİYONU (get_signer) ---
-# Diğer fonksiyonlardan önce tanımlanmalıdır!
+# --- SIGNER VE KONFİGÜRASYON FONKSİYONU ---
+
 def get_signer():
     """Ortam değişkenlerinden OCI kimlik doğrulama yapılandırmasını oluşturur."""
     
@@ -78,7 +78,7 @@ def launch_instance_attempt():
             memory_in_gbs=6
         )
         
-        # Tüm ENV değerlerini temizleyerek isteğin doğru formatlanmasını sağlar
+        # Instance detayları
         instance_details = oci.core.models.LaunchInstanceDetails(
             availability_domain=os.environ.get("OCI_AVAILABILITY_DOMAIN").strip(),
             compartment_id=os.environ["OCI_COMPARTMENT_OCID"].strip(),
@@ -104,6 +104,7 @@ def launch_instance_attempt():
         
         response = compute_client.launch_instance(instance_details)
         
+        # Başarı
         return_data = {
             "status": "success",
             "message": f"VM Başarıyla Başlatma İsteği Gönderildi. ID: {response.data.id}",
@@ -130,6 +131,23 @@ def launch_instance_attempt():
         gmt_plus_3_time = current_utc_time + datetime.timedelta(hours=3)
         gmt_plus_3_formatted = gmt_plus_3_time.strftime('%Y-%m-%d %H:%M:%S')
         
+        # TooManyRequests Hatası (Oran Limiti)
+        if e.code == "TooManyRequests":
+            error_message = (
+                f"🚨 *ACIYARACAK ORAN LİMİTİ HATASI!*\n"
+                f"---------------------------------------------------\n"
+                f"**KOD:** `{e.code}`\n"
+                f"**MESAJ:** OCI sizi geçici olarak engelledi. Kısır döngüye girmeyin.\n"
+                f"**GEREKEN EYLEM:** Lütfen UptimeRobot'ı hemen durdurun.\n"
+                f"15 dakika sonra tekrar başlatın (ve sıklığı 10 dakikada bir tutun)."
+            )
+            send_telegram_message(error_message) # Telegram bildirimi gönder
+            return {
+                "status": "error",
+                "error_type": "RateLimitError",
+                "message": f"Too many requests. OCI sizi engelledi. UptimeRobot'ı durdurun. Son deneme (GMT+3): {gmt_plus_3_formatted}",
+            }
+        
         # Kapasite Hatası
         if "Out of host capacity" in e.message:
             return {
@@ -137,6 +155,7 @@ def launch_instance_attempt():
                 "error_type": "CapacityError",
                 "message": f"Out of host capacity. Tekrar deneyin. Son deneme (GMT+3): {gmt_plus_3_formatted}",
             }
+            
         # Diğer OCI hataları
         return {
             "status": "error",
@@ -152,7 +171,7 @@ def launch_instance_attempt():
 
 @app.route("/health")
 def health():
-    """Render sağlık kontrolü için"""
+    """Render sağlık kontrolü için (VM denemesi yapmaz)"""
     return jsonify({"status": "healthy"}), 200
 
 @app.route("/")
