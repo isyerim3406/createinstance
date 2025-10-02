@@ -3,12 +3,35 @@ from flask import Flask, jsonify
 import oci
 import tempfile
 import base64
-import time # Hata mesajına zaman damgası eklemek için eklendi
+import time
+import requests # YENİ: Telegram API için eklendi
 
 app = Flask(__name__)
 
+# --- TELEGRAM BİLDİRİM FONKSİYONU ---
+def send_telegram_message(message):
+    """Telegram üzerinden bildirim mesajı gönderir."""
+    bot_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    
+    if not bot_token or not chat_id:
+        print("Telegram BOT_TOKEN veya CHAT_ID ayarlanmamış. Bildirim atlanıyor.")
+        return
+
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
+    try:
+        response = requests.post(url, data=payload)
+        response.raise_for_status()
+        print("Telegram bildirimi başarıyla gönderildi.")
+    except Exception as e:
+        print(f"Telegram bildirimi gönderme başarısız oldu: {e}")
+
 # --- SIGNER VE KONFİGÜRASYON FONKSİYONU (get_signer) ---
-# Diğer fonksiyonlardan önce tanımlanmalıdır!
 
 def get_signer():
     """Ortam değişkenlerinden OCI kimlik doğrulama yapılandırmasını oluşturur."""
@@ -21,18 +44,15 @@ def get_signer():
         if "\\n" in private_key:
             private_key = private_key.replace("\\n", "\n")
     else:
-        # Flask, bu hatayı yakalamak için bir hata yolu döndürecektir
         raise KeyError("OCI_PRIVATE_KEY or OCI_PRIVATE_KEY_BASE64 environment variable is missing.")
     
     try:
-        # UnicodeDecodeError düzeltmesi ve temizleme
         with tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.pem', encoding='utf-8', newline=None) as key_file:
             key_file.write(private_key.strip()) 
             key_file_path = key_file.name
     except Exception as e:
         raise IOError(f"Error writing private key to temp file: {str(e)}")
     
-    # Tüm ENV değerlerini temizleyerek (strip()) InvalidParameter hatasını önler
     config = {
         "tenancy": os.environ["OCI_TENANCY_OCID"].strip(),
         "user": os.environ["OCI_USER_OCID"].strip(),
@@ -47,17 +67,14 @@ def get_signer():
 def launch_instance_attempt():
     """OCI'da tek bir VM başlatma denemesi yapar."""
     try:
-        # get_signer artık tanımlı olduğu için NameError vermeyecek
         config = get_signer()
         compute_client = oci.core.ComputeClient(config)
         
-        # Kapasite hatası çözümü: OCPUS ve MEMORY tam sayı (integer) olarak gönderilir.
         shape_config = oci.core.models.LaunchInstanceShapeConfigDetails(
             ocpus=1,
             memory_in_gbs=6
         )
         
-        # Tüm ENV değerlerini temizleyerek isteğin doğru formatlanmasını sağlar
         instance_details = oci.core.models.LaunchInstanceDetails(
             availability_domain=os.environ.get("OCI_AVAILABILITY_DOMAIN").strip(),
             compartment_id=os.environ["OCI_COMPARTMENT_OCID"].strip(),
@@ -76,7 +93,6 @@ def launch_instance_attempt():
             
             display_name=os.environ.get("OCI_INSTANCE_NAME", "auto-instance").strip(),
             
-            # SSH Anahtarının PEM değil, OpenSSH formatında (.strip() ile temizlenmiş) olduğundan emin olun
             metadata={
                 "ssh_authorized_keys": os.environ.get("OCI_SSH_PUBLIC_KEY", "").strip()
             } if os.environ.get("OCI_SSH_PUBLIC_KEY") else {}
@@ -84,12 +100,25 @@ def launch_instance_attempt():
         
         response = compute_client.launch_instance(instance_details)
         
-        return {
+        return_data = {
             "status": "success",
             "message": f"VM Başarıyla Başlatma İsteği Gönderildi. ID: {response.data.id}",
             "instance_id": response.data.id,
             "lifecycle_state": response.data.lifecycle_state
         }
+        
+        # BAŞARILI BİLDİRİMİ GÖNDERİLİYOR
+        success_message = (
+            f"🎉 *VM Başlatma Başarılı!*\n"
+            f"----------------------------------------\n"
+            f"VM Adı: {response.data.display_name}\n"
+            f"Durum: `{response.data.lifecycle_state}`\n"
+            f"Instance ID: `{response.data.id}`\n"
+            f"Lütfen harici tetikleyiciyi durdurun (UptimeRobot, vb.)."
+        )
+        send_telegram_message(success_message)
+        
+        return return_data
 
     except oci.exceptions.ServiceError as e:
         # Kapasite Hatası
@@ -114,7 +143,6 @@ def launch_instance_attempt():
 
 @app.route("/health")
 def health():
-    """Render sağlık kontrolü için"""
     return jsonify({"status": "healthy"}), 200
 
 @app.route("/")
@@ -122,8 +150,6 @@ def home():
     """Ana yol: Tek bir VM başlatma denemesi yapar."""
     result = launch_instance_attempt()
     
-    # Hata kodu 400 değil, 200 veya 400 olmalı. Kapasite hatası için bile 200 döndürmek,
-    # harici cron servislerinin panik yapmasını önler, ancak biz kritik hatalar için 400 dönelim.
     http_status = 200
     if result["status"] == "error":
         http_status = 400
@@ -133,7 +159,6 @@ def home():
 @app.route("/debug/config")
 def debug_config():
     """Environment variable'ları kontrol et (güvenli)"""
-    # ... (Önceki debug_config fonksiyonu)
     return jsonify({
         "tenancy": os.environ.get("OCI_TENANCY_OCID", "NOT_SET")[:20] + "...",
         "user": os.environ.get("OCI_USER_OCID", "NOT_SET")[:20] + "...",
@@ -163,8 +188,6 @@ def debug_auth():
             "error_type": type(e).__name__,
             "message": str(e)
         }), 400
-
-# Diğer OCI işlem yolları (check/list/stop/terminate) size kalmıştır.
 
 # --- UYGULAMA BAŞLANGICI ---
 
