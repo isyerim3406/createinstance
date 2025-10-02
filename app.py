@@ -4,7 +4,9 @@ import oci
 import tempfile
 import base64
 import time
-import requests # YENİ: Telegram API için eklendi
+import requests
+import datetime # GMT+3 zaman dilimi düzeltmesi için eklendi
+import threading # (Gerekirse ileride arka plan işleri için bırakıldı, şu an kullanılmıyor)
 
 app = Flask(__name__)
 
@@ -32,7 +34,7 @@ def send_telegram_message(message):
         print(f"Telegram bildirimi gönderme başarısız oldu: {e}")
 
 # --- SIGNER VE KONFİGÜRASYON FONKSİYONU (get_signer) ---
-
+# Diğer fonksiyonlardan önce tanımlanmalıdır!
 def get_signer():
     """Ortam değişkenlerinden OCI kimlik doğrulama yapılandırmasını oluşturur."""
     
@@ -70,11 +72,13 @@ def launch_instance_attempt():
         config = get_signer()
         compute_client = oci.core.ComputeClient(config)
         
+        # Flex Shape'i tam sayı olarak tanımlar
         shape_config = oci.core.models.LaunchInstanceShapeConfigDetails(
             ocpus=1,
             memory_in_gbs=6
         )
         
+        # Tüm ENV değerlerini temizleyerek isteğin doğru formatlanmasını sağlar
         instance_details = oci.core.models.LaunchInstanceDetails(
             availability_domain=os.environ.get("OCI_AVAILABILITY_DOMAIN").strip(),
             compartment_id=os.environ["OCI_COMPARTMENT_OCID"].strip(),
@@ -121,12 +125,17 @@ def launch_instance_attempt():
         return return_data
 
     except oci.exceptions.ServiceError as e:
+        # --- GMT+3 ZAMAN DİLİMİ DÜZELTMESİ ---
+        current_utc_time = datetime.datetime.now(datetime.timezone.utc)
+        gmt_plus_3_time = current_utc_time + datetime.timedelta(hours=3)
+        gmt_plus_3_formatted = gmt_plus_3_time.strftime('%Y-%m-%d %H:%M:%S')
+        
         # Kapasite Hatası
         if "Out of host capacity" in e.message:
             return {
                 "status": "error",
                 "error_type": "CapacityError",
-                "message": f"Out of host capacity. Tekrar deneyin. Son deneme: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+                "message": f"Out of host capacity. Tekrar deneyin. Son deneme (GMT+3): {gmt_plus_3_formatted}",
             }
         # Diğer OCI hataları
         return {
@@ -143,6 +152,7 @@ def launch_instance_attempt():
 
 @app.route("/health")
 def health():
+    """Render sağlık kontrolü için"""
     return jsonify({"status": "healthy"}), 200
 
 @app.route("/")
