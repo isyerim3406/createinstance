@@ -34,7 +34,6 @@ def send_telegram_message(message):
         print(f"Telegram bildirimi gönderme başarısız oldu: {e}")
 
 # --- SIGNER VE KONFİGÜRASYON FONKSİYONU ---
-
 def get_signer():
     """Ortam değişkenlerinden OCI kimlik doğrulama yapılandırmasını oluşturur."""
     
@@ -65,14 +64,13 @@ def get_signer():
     return config
 
 # --- ANA İŞLEV (VM BAŞLATMA) ---
-
 def launch_instance_attempt():
     """OCI'da tek bir VM başlatma denemesi yapar."""
     try:
         config = get_signer()
         compute_client = oci.core.ComputeClient(config)
         
-        # Flex Shape'i tam sayı olarak tanımlar
+        # Flex Shape yapılandırması
         shape_config = oci.core.models.LaunchInstanceShapeConfigDetails(
             ocpus=1,
             memory_in_gbs=6
@@ -104,7 +102,7 @@ def launch_instance_attempt():
         
         response = compute_client.launch_instance(instance_details)
         
-        # Başarı
+        # Başarılı
         return_data = {
             "status": "success",
             "message": f"VM Başarıyla Başlatma İsteği Gönderildi. ID: {response.data.id}",
@@ -112,7 +110,7 @@ def launch_instance_attempt():
             "lifecycle_state": response.data.lifecycle_state
         }
         
-        # BAŞARILI BİLDİRİMİ GÖNDERİLİYOR
+        # Telegram bildirimi
         success_message = (
             f"🎉 *VM Başlatma Başarılı!*\n"
             f"----------------------------------------\n"
@@ -126,29 +124,28 @@ def launch_instance_attempt():
         return return_data
 
     except oci.exceptions.ServiceError as e:
-        # --- GMT+3 ZAMAN DİLİMİ DÜZELTMESİ ---
+        # GMT+3 zamanı
         current_utc_time = datetime.datetime.now(datetime.timezone.utc)
         gmt_plus_3_time = current_utc_time + datetime.timedelta(hours=3)
         gmt_plus_3_formatted = gmt_plus_3_time.strftime('%Y-%m-%d %H:%M:%S')
         
-        # TooManyRequests Hatası (Oran Limiti)
+        # TooManyRequests (rate limit)
         if e.code == "TooManyRequests":
             error_message = (
-                f"🚨 *ACIYARACAK ORAN LİMİTİ HATASI!*\n"
+                f"🚨 *Oran Limiti Aşıldı!*\n"
                 f"---------------------------------------------------\n"
                 f"**KOD:** `{e.code}`\n"
-                f"**MESAJ:** OCI sizi geçici olarak engelledi. Kısır döngüye girmeyin.\n"
-                f"**GEREKEN EYLEM:** Lütfen UptimeRobot'ı hemen durdurun.\n"
-                f"15 dakika sonra tekrar başlatın (ve sıklığı 10 dakikada bir tutun)."
+                f"OCI sizi geçici olarak engelledi.\n"
+                f"UptimeRobot'ı durdurun, 15 dk sonra tekrar deneyin."
             )
-            send_telegram_message(error_message) # Telegram bildirimi gönder
+            send_telegram_message(error_message)
             return {
                 "status": "error",
                 "error_type": "RateLimitError",
-                "message": f"Too many requests. OCI sizi engelledi. UptimeRobot'ı durdurun. Son deneme (GMT+3): {gmt_plus_3_formatted}",
+                "message": f"Too many requests. OCI sizi engelledi. Son deneme (GMT+3): {gmt_plus_3_formatted}",
             }
         
-        # Kapasite Hatası
+        # Kapasite hatası
         if "Out of host capacity" in e.message:
             return {
                 "status": "error",
@@ -164,30 +161,33 @@ def launch_instance_attempt():
             "code": e.code
         }
     except Exception as e:
-        # Yapılandırma hataları (KeyError gibi)
+        # Yapılandırma hataları vb.
         return {"status": "error", "error_type": type(e).__name__, "message": str(e)}
 
-# --- FLASK YOLLARI (ROUTES) ---
-
+# --- FLASK ROUTES ---
 @app.route("/health")
 def health():
-    """Render sağlık kontrolü için (VM denemesi yapmaz)"""
+    """Render sağlık kontrolü"""
     return jsonify({"status": "healthy"}), 200
 
 @app.route("/")
 def home():
     """Ana yol: Tek bir VM başlatma denemesi yapar."""
     result = launch_instance_attempt()
-    
+
     http_status = 200
     if result["status"] == "error":
-        http_status = 400
-        
+        # CapacityError: cron-job’un durmaması için 200 dön, Telegram mesajı yok
+        if result.get("error_type") == "CapacityError":
+            http_status = 200
+        else:
+            http_status = 400
+
     return jsonify(result), http_status
 
 @app.route("/debug/config")
 def debug_config():
-    """Environment variable'ları kontrol et (güvenli)"""
+    """Environment değişkenlerini kısmi göster"""
     return jsonify({
         "tenancy": os.environ.get("OCI_TENANCY_OCID", "NOT_SET")[:20] + "...",
         "user": os.environ.get("OCI_USER_OCID", "NOT_SET")[:20] + "...",
@@ -199,7 +199,7 @@ def debug_config():
 
 @app.route("/debug/auth")
 def debug_auth():
-    """OCI authentication'ı test et"""
+    """OCI kimlik doğrulamasını test et"""
     try:
         config = get_signer()
         identity_client = oci.identity.IdentityClient(config)
@@ -218,8 +218,7 @@ def debug_auth():
             "message": str(e)
         }), 400
 
-# --- UYGULAMA BAŞLANGICI ---
-
+# --- APP ENTRY POINT ---
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
